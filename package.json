@@ -7,7 +7,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "check": "eslint && tsc --noEmit && echo '[OK] Checks successful'"
   },
   "dependencies": {
     "@kubernetes/client-node": "^1.4.0",
