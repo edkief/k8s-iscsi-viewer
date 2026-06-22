@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iscsi-viewer
+  namespace: iscsi-viewer
+  labels:
+    app: iscsi-viewer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iscsi-viewer
+  template:
+    metadata:
+      labels:
+        app: iscsi-viewer
+    spec:
+      serviceAccountName: iscsi-viewer
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: iscsi-viewer
+          # Replace with your registry/tag.
+          image: ghcr.io/your-org/iscsi-viewer:latest
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            # Prometheus that scrapes kubelet volume_stats (for actual usage).
+            - name: PROMETHEUS_URL
+              value: "http://prometheus-operated.monitoring.svc:9090"
+            # Snapshot cache TTL / UI refresh cadence (seconds). Main throttle on
+            # API server + Prometheus load. Default 60 if unset.
+            - name: CACHE_TTL_SECONDS
+              value: "60"
+            # Optional: explicit democratic-csi driver name(s), comma-separated.
+            # Defaults to matching any driver containing "democratic-csi".
+            # - name: DRIVER_NAMES
+            #   value: "org.democratic-csi.iscsi"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iscsi-viewer
+  namespace: iscsi-viewer
+  labels:
+    app: iscsi-viewer
+spec:
+  selector:
+    app: iscsi-viewer
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

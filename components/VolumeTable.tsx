@@ -1,0 +1,300 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { VolumeRow, VolumesResponse } from "@/lib/types";
+import { formatAge, formatBytes, formatPercent } from "@/lib/format";
+import styles from "./VolumeTable.module.css";
+
+type SortKey =
+  | "state"
+  | "name"
+  | "namespace"
+  | "sizeBytes"
+  | "usedBytes"
+  | "createdAt"
+  | "dataEngine"
+  | "bound"
+  | "attachedNode";
+
+const DEFAULT_REFRESH_MS = 60000;
+
+export default function VolumeTable() {
+  const [data, setData] = useState<VolumesResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [auto, setAuto] = useState(true);
+
+  const [query, setQuery] = useState("");
+  const [namespace, setNamespace] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("namespace");
+  const [sortAsc, setSortAsc] = useState(true);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch("/api/volumes", { cache: "no-store" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || body.error || `HTTP ${res.status}`);
+      }
+      setData(await res.json());
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Fetch on mount. State updates happen asynchronously after await, not
+    // synchronously in the effect body, so this is not a cascading render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    load();
+  }, [load]);
+
+  // Poll at the server cache TTL — refreshing faster only returns cached data
+  // and wastes round-trips, so we align the client to the same cadence.
+  const refreshMs = (data?.ttlSeconds ?? DEFAULT_REFRESH_MS / 1000) * 1000;
+  useEffect(() => {
+    if (!auto) return;
+    const id = setInterval(load, refreshMs);
+    return () => clearInterval(id);
+  }, [auto, load, refreshMs]);
+
+  const namespaces = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of data?.rows ?? []) set.add(r.namespace);
+    return [...set].sort();
+  }, [data]);
+
+  const rows = useMemo(() => {
+    let out = data?.rows ?? [];
+    if (namespace) out = out.filter((r) => r.namespace === namespace);
+    if (query.trim()) {
+      const q = query.toLowerCase();
+      out = out.filter(
+        (r) =>
+          r.name.toLowerCase().includes(q) ||
+          (r.pvName ?? "").toLowerCase().includes(q) ||
+          r.namespace.toLowerCase().includes(q) ||
+          (r.attachedNode ?? "").toLowerCase().includes(q) ||
+          r.consumers.some((c) => c.pod.toLowerCase().includes(q)),
+      );
+    }
+    const dir = sortAsc ? 1 : -1;
+    return [...out].sort((a, b) => cmp(a, b, sortKey) * dir);
+  }, [data, namespace, query, sortKey, sortAsc]);
+
+  const toggleSort = (key: SortKey) => {
+    if (key === sortKey) setSortAsc((v) => !v);
+    else {
+      setSortKey(key);
+      setSortAsc(true);
+    }
+  };
+
+  const arrow = (key: SortKey) =>
+    key === sortKey ? <span className={styles.sortArrow}>{sortAsc ? "▲" : "▼"}</span> : null;
+
+  return (
+    <div className={styles.wrap}>
+      <div className={styles.header}>
+        <div>
+          <h1 className={styles.title}>iSCSI Volumes</h1>
+          <p className={styles.subtitle}>
+            TrueNAS / democratic-csi PersistentVolumeClaims
+            {data && (
+              <>
+                {" · "}
+                {rows.length} of {data.rows.length} shown · updated{" "}
+                {formatAge(data.generatedAt)} ago{data.stale ? " (stale)" : ""}
+                {auto ? ` · refresh ${data.ttlSeconds}s` : ""}
+              </>
+            )}
+          </p>
+        </div>
+        <div className={styles.controls}>
+          <input
+            className={styles.input}
+            placeholder="Search name / pod / node…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <select
+            className={styles.select}
+            value={namespace}
+            onChange={(e) => setNamespace(e.target.value)}
+          >
+            <option value="">All namespaces</option>
+            {namespaces.map((ns) => (
+              <option key={ns} value={ns}>
+                {ns}
+              </option>
+            ))}
+          </select>
+          <label className={styles.checkbox}>
+            <input
+              type="checkbox"
+              checked={auto}
+              onChange={(e) => setAuto(e.target.checked)}
+            />
+            Auto
+          </label>
+          <button className={styles.button} onClick={load}>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {error && <div className={styles.warn}>Error: {error}</div>}
+      {data?.warnings.map((w) => (
+        <div key={w} className={styles.warn}>
+          {w}
+        </div>
+      ))}
+
+      <div className={styles.tableWrap}>
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th onClick={() => toggleSort("state")}>State {arrow("state")}</th>
+              <th onClick={() => toggleSort("name")}>Name {arrow("name")}</th>
+              <th onClick={() => toggleSort("namespace")}>
+                Namespace {arrow("namespace")}
+              </th>
+              <th className={styles.num} onClick={() => toggleSort("sizeBytes")}>
+                Size {arrow("sizeBytes")}
+              </th>
+              <th onClick={() => toggleSort("usedBytes")}>
+                Actual size {arrow("usedBytes")}
+              </th>
+              <th onClick={() => toggleSort("createdAt")}>
+                Created {arrow("createdAt")}
+              </th>
+              <th onClick={() => toggleSort("dataEngine")}>
+                Data engine {arrow("dataEngine")}
+              </th>
+              <th onClick={() => toggleSort("bound")}>Status {arrow("bound")}</th>
+              <th onClick={() => toggleSort("attachedNode")}>
+                Attached to {arrow("attachedNode")}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <Row key={`${r.namespace}/${r.name}/${r.pvName ?? ""}`} r={r} />
+            ))}
+          </tbody>
+        </table>
+        {!loading && rows.length === 0 && (
+          <div className={styles.empty}>No iSCSI volumes found.</div>
+        )}
+        {loading && <div className={styles.empty}>Loading…</div>}
+      </div>
+    </div>
+  );
+}
+
+function Row({ r }: { r: VolumeRow }) {
+  return (
+    <tr>
+      <td>
+        <StateBadge state={r.state} />
+      </td>
+      <td>
+        <div>{r.name}</div>
+        {r.pvName && <div className={`${styles.sub} mono`}>{r.pvName}</div>}
+      </td>
+      <td>{r.namespace}</td>
+      <td className={styles.num}>{formatBytes(r.sizeBytes)}</td>
+      <td>
+        <Usage r={r} />
+      </td>
+      <td title={r.createdAt ?? ""}>{formatAge(r.createdAt)}</td>
+      <td>
+        <span className={styles.sub}>{r.dataEngine}</span>
+      </td>
+      <td>
+        {r.bound ? (
+          "Bound"
+        ) : (
+          <span className={styles.muted}>{r.pvcPhase ?? r.pvPhase ?? "—"}</span>
+        )}
+      </td>
+      <td>
+        {r.attachedNode ? (
+          <div>
+            <span className="mono">{r.attachedNode}</span>
+            {r.attachmentHealthy === false && (
+              <span className={styles.s_bad}> (unhealthy)</span>
+            )}
+          </div>
+        ) : (
+          <span className={styles.muted}>—</span>
+        )}
+        {r.consumers.length > 0 && (
+          <div className={`${styles.sub} mono`}>
+            {r.consumers.map((c) => c.pod).join(", ")}
+          </div>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function Usage({ r }: { r: VolumeRow }) {
+  if (!r.usageAvailable) {
+    return <span className={styles.muted}>n/a (block)</span>;
+  }
+  if (r.usedBytes == null) {
+    return <span className={styles.muted}>—</span>;
+  }
+  const pct = r.usedPercent ?? 0;
+  return (
+    <div className={styles.usage}>
+      <div className={styles.bar}>
+        <div
+          className={`${styles.barFill} ${pct >= 0.85 ? styles.high : ""}`}
+          style={{ width: `${Math.min(100, Math.round(pct * 100))}%` }}
+        />
+      </div>
+      <span className={styles.num}>
+        {formatBytes(r.usedBytes)}
+        {r.usedPercent != null && (
+          <span className={styles.sub}> ({formatPercent(r.usedPercent)})</span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function StateBadge({ state }: { state: VolumeRow["state"] }) {
+  const cls =
+    state === "In use"
+      ? styles.s_inuse
+      : state === "Attached"
+        ? styles.s_attached
+        : state === "Detached" || state === "Released"
+          ? styles.s_detached
+          : state === "Pending"
+            ? styles.s_pending
+            : styles.s_bad;
+  return <span className={`${styles.badge} ${cls}`}>{state}</span>;
+}
+
+function cmp(a: VolumeRow, b: VolumeRow, key: SortKey): number {
+  switch (key) {
+    case "sizeBytes":
+      return (a.sizeBytes ?? 0) - (b.sizeBytes ?? 0);
+    case "usedBytes":
+      return (a.usedBytes ?? -1) - (b.usedBytes ?? -1);
+    case "createdAt":
+      return (a.createdAt ?? "").localeCompare(b.createdAt ?? "");
+    case "bound":
+      return Number(a.bound) - Number(b.bound);
+    case "attachedNode":
+      return (a.attachedNode ?? "").localeCompare(b.attachedNode ?? "");
+    default:
+      return String(a[key] ?? "").localeCompare(String(b[key] ?? ""));
+  }
+}
