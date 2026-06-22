@@ -13,8 +13,18 @@ type SortKey =
   | "usedBytes"
   | "createdAt"
   | "dataEngine"
-  | "bound"
   | "attachedNode";
+
+const SORT_LABELS: Record<SortKey, string> = {
+  state: "State",
+  name: "Name",
+  namespace: "Namespace",
+  sizeBytes: "Size",
+  usedBytes: "Usage",
+  createdAt: "Created",
+  dataEngine: "Data engine",
+  attachedNode: "Attached to",
+};
 
 const DEFAULT_REFRESH_MS = 60000;
 
@@ -132,6 +142,20 @@ export default function VolumeTable() {
               </option>
             ))}
           </select>
+          <div className={styles.mobileSortWrap}>
+            <span className={styles.muted}>Sort:</span>
+            <select
+              className={styles.select}
+              value={sortKey}
+              onChange={(e) => setSortKey(e.target.value as SortKey)}
+            >
+              {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
+                <option key={k} value={k}>
+                  {SORT_LABELS[k]}
+                </option>
+              ))}
+            </select>
+          </div>
           <label className={styles.checkbox}>
             <input
               type="checkbox"
@@ -174,7 +198,6 @@ export default function VolumeTable() {
               <th onClick={() => toggleSort("dataEngine")}>
                 Data engine {arrow("dataEngine")}
               </th>
-              <th onClick={() => toggleSort("bound")}>Status {arrow("bound")}</th>
               <th onClick={() => toggleSort("attachedNode")}>
                 Attached to {arrow("attachedNode")}
               </th>
@@ -191,11 +214,24 @@ export default function VolumeTable() {
         )}
         {loading && <div className={styles.empty}>Loading…</div>}
       </div>
+
+      <div className={styles.cardList}>
+        {rows.map((r) => (
+          <Card key={`${r.namespace}/${r.name}/${r.pvName ?? ""}`} r={r} />
+        ))}
+        {!loading && rows.length === 0 && (
+          <div className={styles.empty}>No iSCSI volumes found.</div>
+        )}
+        {loading && <div className={styles.empty}>Loading…</div>}
+      </div>
     </div>
   );
 }
 
 function Row({ r }: { r: VolumeRow }) {
+  const [expanded, setExpanded] = useState(false);
+  const extraCount = r.consumers.length - 1;
+
   return (
     <tr>
       <td>
@@ -215,30 +251,104 @@ function Row({ r }: { r: VolumeRow }) {
         <span className={styles.sub}>{r.dataEngine}</span>
       </td>
       <td>
-        {r.bound ? (
-          "Bound"
-        ) : (
-          <span className={styles.muted}>{r.pvcPhase ?? r.pvPhase ?? "—"}</span>
-        )}
-      </td>
-      <td>
         {r.attachedNode ? (
           <div>
             <span className="mono">{r.attachedNode}</span>
             {r.attachmentHealthy === false && (
               <span className={styles.s_bad}> (unhealthy)</span>
             )}
+            {r.consumers.length > 0 && (
+              <div className={`${styles.sub} mono`}>
+                {r.consumers[0].pod}
+                {extraCount > 0 && (
+                  <>
+                    {" "}
+                    <button
+                      className={styles.expandBtn}
+                      onClick={() => setExpanded((v) => !v)}
+                    >
+                      {expanded ? "less" : `+${extraCount} more`}
+                    </button>
+                    {expanded &&
+                      r.consumers.slice(1).map((c) => (
+                        <div key={c.pod}>{c.pod}</div>
+                      ))}
+                  </>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <span className={styles.muted}>—</span>
         )}
-        {r.consumers.length > 0 && (
-          <div className={`${styles.sub} mono`}>
-            {r.consumers.map((c) => c.pod).join(", ")}
-          </div>
-        )}
       </td>
     </tr>
+  );
+}
+
+function Card({ r }: { r: VolumeRow }) {
+  const [expanded, setExpanded] = useState(false);
+  const extraCount = r.consumers.length - 1;
+
+  return (
+    <div className={styles.card}>
+      <div className={styles.cardTop}>
+        <StateBadge state={r.state} />
+        <div className={styles.cardIdentity}>
+          <span className={styles.cardName}>{r.name}</span>
+          <span className={styles.sub}>{r.namespace}</span>
+        </div>
+      </div>
+
+      <div className={styles.cardGrid}>
+        <div className={styles.cardField}>
+          <span className={styles.cardLabel}>Size</span>
+          <span>{formatBytes(r.sizeBytes)}</span>
+        </div>
+        <div className={styles.cardField}>
+          <span className={styles.cardLabel}>Usage</span>
+          <Usage r={r} />
+        </div>
+        <div className={styles.cardField}>
+          <span className={styles.cardLabel}>Created</span>
+          <span title={r.createdAt ?? ""}>{formatAge(r.createdAt)}</span>
+        </div>
+        <div className={styles.cardField}>
+          <span className={styles.cardLabel}>Engine</span>
+          <span className={styles.sub}>{r.dataEngine}</span>
+        </div>
+      </div>
+
+      {r.attachedNode && (
+        <div className={styles.cardAttach}>
+          <span className={styles.cardLabel}>Attached to</span>
+          <span className="mono">{r.attachedNode}</span>
+          {r.attachmentHealthy === false && (
+            <span className={styles.s_bad}> (unhealthy)</span>
+          )}
+          {r.consumers.length > 0 && (
+            <div className={`${styles.sub} mono`}>
+              {r.consumers[0].pod}
+              {extraCount > 0 && (
+                <>
+                  {" "}
+                  <button
+                    className={styles.expandBtn}
+                    onClick={() => setExpanded((v) => !v)}
+                  >
+                    {expanded ? "less" : `+${extraCount} more`}
+                  </button>
+                  {expanded &&
+                    r.consumers.slice(1).map((c) => (
+                      <div key={c.pod}>{c.pod}</div>
+                    ))}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -274,11 +384,13 @@ function StateBadge({ state }: { state: VolumeRow["state"] }) {
       ? styles.s_inuse
       : state === "Attached"
         ? styles.s_attached
-        : state === "Detached" || state === "Released"
+        : state === "Detached"
           ? styles.s_detached
-          : state === "Pending"
-            ? styles.s_pending
-            : styles.s_bad;
+          : state === "Released"
+            ? styles.s_released
+            : state === "Pending"
+              ? styles.s_pending
+              : styles.s_bad;
   return <span className={`${styles.badge} ${cls}`}>{state}</span>;
 }
 
@@ -290,8 +402,6 @@ function cmp(a: VolumeRow, b: VolumeRow, key: SortKey): number {
       return (a.usedBytes ?? -1) - (b.usedBytes ?? -1);
     case "createdAt":
       return (a.createdAt ?? "").localeCompare(b.createdAt ?? "");
-    case "bound":
-      return Number(a.bound) - Number(b.bound);
     case "attachedNode":
       return (a.attachedNode ?? "").localeCompare(b.attachedNode ?? "");
     default:

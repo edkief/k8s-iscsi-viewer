@@ -73,6 +73,8 @@
   font-size: 13px;
 }
 
+/* ── Desktop table ─────────────────────────────────────────── */
+
 .tableWrap {
   overflow-x: auto;
   border: 1px solid var(--border);
@@ -127,6 +129,8 @@
   font-size: 12px;
 }
 
+/* ── State badges ──────────────────────────────────────────── */
+
 .badge {
   display: inline-block;
   padding: 2px 8px;
@@ -151,6 +155,11 @@
   border-color: var(--idle);
   background: rgba(110, 118, 129, 0.12);
 }
+.s_released {
+  color: #a78bfa;
+  border-color: #a78bfa;
+  background: rgba(167, 139, 250, 0.12);
+}
 .s_pending {
   color: var(--warn);
   border-color: var(--warn);
@@ -161,6 +170,8 @@
   border-color: var(--bad);
   background: rgba(248, 81, 73, 0.12);
 }
+
+/* ── Usage bar ─────────────────────────────────────────────── */
 
 .usage {
   display: flex;
@@ -175,6 +186,7 @@
   border-radius: 3px;
   background: var(--panel-2);
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 .barFill {
@@ -187,8 +199,120 @@
   background: var(--bad);
 }
 
+/* ── Pod expand button ─────────────────────────────────────── */
+
+.expandBtn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0;
+  line-height: inherit;
+}
+
+.expandBtn:hover {
+  text-decoration: underline;
+}
+
+/* ── Mobile sort (hidden on desktop) ───────────────────────── */
+
+.mobileSortWrap {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+/* ── Mobile card list (hidden on desktop) ──────────────────── */
+
+.cardList {
+  display: none;
+}
+
+/* ── Empty / loading ───────────────────────────────────────── */
+
 .empty {
   padding: 32px;
   text-align: center;
   color: var(--muted);
+}
+
+/* ── Mobile layout ─────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .tableWrap {
+    display: none;
+  }
+
+  .mobileSortWrap {
+    display: flex;
+  }
+
+  .cardList {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .cardTop {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .cardIdentity {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .cardName {
+    font-weight: 600;
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cardGrid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 16px;
+  }
+
+  .cardField {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .cardLabel {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+  }
+
+  .cardAttach {
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 13px;
+  }
 }
