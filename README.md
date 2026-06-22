@@ -65,10 +65,10 @@ reduce load.
 ## Local development
 
 ```bash
-npm install
+pnpm install
 cp .env.example .env        # set PROMETHEUS_URL (port-forward Prometheus if needed)
 # kubectl port-forward -n monitoring svc/prometheus-operated 9090:9090
-npm run dev                 # uses your ~/.kube/config
+pnpm dev                    # uses your ~/.kube/config
 ```
 
 Open http://localhost:3000. Sanity-check rows against `kubectl get pvc,pv -A` and
