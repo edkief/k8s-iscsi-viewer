@@ -60,6 +60,28 @@ export function zvolKey(volumeHandle?: string): string | undefined {
   return volumeHandle.startsWith("zvol/") ? volumeHandle.slice(5) : volumeHandle;
 }
 
+function basename(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
+// The volumeHandle format depends on the democratic-csi config: some deployments
+// use the full "zvol/<pool>/<parent>/<name>" path, others just the bare dataset
+// name ("pvc-<uuid>"). Build a resolver over a dataset map that tries the full
+// path first, then falls back to matching the handle's trailing name against
+// each dataset id's basename. pvc-<uuid> names are globally unique, so the
+// basename match is unambiguous in practice.
+export type ZvolResolver = (volumeHandle?: string) => ZvolUsage | undefined;
+
+export function zvolResolver(map: ZvolMap): ZvolResolver {
+  const byName = new Map<string, ZvolUsage>();
+  for (const [id, usage] of map) byName.set(basename(id), usage);
+  return (volumeHandle) => {
+    const key = zvolKey(volumeHandle);
+    if (key === undefined) return undefined;
+    return map.get(key) ?? byName.get(basename(key));
+  };
+}
+
 // Derive the JSON-RPC WebSocket URL from the configured base host.
 function wsUrl(base: string): string {
   const trimmed = base.replace(/\/$/, "");

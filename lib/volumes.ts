@@ -10,8 +10,8 @@ import { fetchPvcUsage, type PvcUsage, type UsageMap } from "./prometheus";
 import {
   fetchZvolUsage,
   getTruenasStatus,
-  zvolKey,
-  type ZvolMap,
+  zvolResolver,
+  type ZvolResolver,
   type ZvolUsage,
 } from "./truenas";
 import { parseQuantityToBytes } from "./format";
@@ -109,6 +109,9 @@ async function computeVolumes(): Promise<VolumesResponse> {
         : "PROMETHEUS_URL not set — actual usage unavailable.",
     );
   }
+  // Resolve a PV's volumeHandle to its TrueNAS zvol once, tolerating both the
+  // full-path and bare-name handle formats democratic-csi can emit.
+  const resolveZvol: ZvolResolver = zvol ? zvolResolver(zvol) : () => undefined;
   // Lookup maps.
   const pvByName = new Map<string, V1PersistentVolume>();
   for (const pv of snap.pvs) if (pv.metadata?.name) pvByName.set(pv.metadata.name, pv);
@@ -152,7 +155,7 @@ async function computeVolumes(): Promise<VolumesResponse> {
     if (!isIscsi) continue;
     if (pvName) seenPv.add(pvName);
 
-    rows.push(buildRow(pvc, pv, vaByPv, consumersByPvc, usage, zvol));
+    rows.push(buildRow(pvc, pv, vaByPv, consumersByPvc, usage, resolveZvol));
   }
 
   // Orphan iSCSI PVs with no live claim (Released/Available) — surface leaked volumes.
@@ -160,7 +163,7 @@ async function computeVolumes(): Promise<VolumesResponse> {
     const name = pv.metadata?.name;
     if (!name || seenPv.has(name)) continue;
     if (!driverMatches(pv.spec?.csi?.driver)) continue;
-    rows.push(buildOrphanRow(pv, vaByPv, zvol));
+    rows.push(buildOrphanRow(pv, vaByPv, resolveZvol));
   }
 
   rows.sort(
@@ -174,7 +177,7 @@ async function computeVolumes(): Promise<VolumesResponse> {
   let matched = 0;
   if (zvol) {
     for (const r of rows) {
-      if (r.volumeHandle && zvol.has(zvolKey(r.volumeHandle) ?? "")) matched++;
+      if (r.volumeHandle && resolveZvol(r.volumeHandle)) matched++;
     }
   }
 
@@ -240,7 +243,7 @@ function buildRow(
   vaByPv: Map<string, V1VolumeAttachment>,
   consumersByPvc: Map<string, Consumer[]>,
   usage: UsageMap | null,
-  zvol: ZvolMap | null,
+  resolveZvol: ZvolResolver,
 ): VolumeRow {
   const namespace = pvc.metadata?.namespace ?? "";
   const name = pvc.metadata?.name ?? "?";
@@ -252,7 +255,7 @@ function buildRow(
     parseQuantityToBytes(pvc.status?.capacity?.storage);
 
   const volumeMode = pvc.spec?.volumeMode ?? pv?.spec?.volumeMode ?? "Filesystem";
-  const z = zvol?.get(zvolKey(pv?.spec?.csi?.volumeHandle) ?? "");
+  const z = resolveZvol(pv?.spec?.csi?.volumeHandle);
 
   // Prometheus is primary for mounted filesystem volumes; TrueNAS fills the gaps
   // (block-mode, or unmounted with no Prometheus data) and always supplies the
@@ -363,7 +366,7 @@ function zvolFields(z: ZvolUsage | undefined) {
 function buildOrphanRow(
   pv: V1PersistentVolume,
   vaByPv: Map<string, V1VolumeAttachment>,
-  zvol: ZvolMap | null,
+  resolveZvol: ZvolResolver,
 ): VolumeRow {
   const pvName = pv.metadata?.name;
   const claimRef = pv.spec?.claimRef;
@@ -372,7 +375,7 @@ function buildOrphanRow(
 
   // No claim ⇒ no kubelet/Prometheus stats; TrueNAS is the only usage source,
   // and surfacing it on leaked PVs shows how much space the orphan still holds.
-  const z = zvol?.get(zvolKey(pv.spec?.csi?.volumeHandle) ?? "");
+  const z = resolveZvol(pv.spec?.csi?.volumeHandle);
   const fill = computeUsage(undefined, z, pv.spec?.volumeMode !== "Block");
 
   return {
