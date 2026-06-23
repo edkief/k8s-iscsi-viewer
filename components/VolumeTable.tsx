@@ -373,6 +373,17 @@ function Usage({ r }: { r: VolumeRow }) {
         {r.usedPercent != null && (
           <span className={styles.sub}> ({formatPercent(r.usedPercent)})</span>
         )}
+        {r.usageStale && (
+          <span
+            className={styles.staleFlag}
+            title={`Last known usage${
+              r.usageAsOf ? ` from ${formatAge(r.usageAsOf)} ago` : ""
+            } — volume not currently mounted`}
+          >
+            {" "}
+            ⚠
+          </span>
+        )}
       </span>
     </div>
   );

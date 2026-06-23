@@ -216,6 +216,8 @@ function buildRow(
     capacityBytes,
     usedPercent,
     usageAvailable,
+    usageStale: u?.stale,
+    usageAsOf: u?.asOf,
     createdAt: pvc.metadata?.creationTimestamp
       ? new Date(pvc.metadata.creationTimestamp).toISOString()
       : undefined,

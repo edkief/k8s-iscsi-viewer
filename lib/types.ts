@@ -28,6 +28,8 @@ export interface VolumeRow {
   capacityBytes?: number; // filesystem capacity from Prometheus
   usedPercent?: number; // usedBytes / capacityBytes
   usageAvailable: boolean; // false for block-mode (no kubelet stats) -> phase 2
+  usageStale?: boolean; // usage from last_over_time fallback (volume unmounted)
+  usageAsOf?: string; // ISO timestamp of last known sample, when stale
   // lifecycle
   createdAt?: string; // ISO timestamp (PVC creationTimestamp)
   state: VolumeState;

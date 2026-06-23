@@ -129,6 +129,12 @@
   font-size: 12px;
 }
 
+.staleFlag {
+  color: #d08700;
+  cursor: help;
+  font-size: 12px;
+}
+
 /* ── State badges ──────────────────────────────────────────── */
 
 .badge {
