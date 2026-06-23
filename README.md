@@ -21,7 +21,8 @@ usage, attachment, and more — all from the Kubernetes API plus Prometheus.
 | Attached to | node from VolumeAttachment + consuming pod(s) |
 
 **Block-mode volumes** (`volumeMode: Block`) have no kubelet filesystem stats, so
-their actual size shows `n/a (block)` — resolved in Phase 2 (see below).
+without TrueNAS their actual size shows `n/a (block)` — filled in by Phase 2 (see
+below).
 
 ## Architecture
 
@@ -44,6 +45,9 @@ See `.env.example`. Key vars:
 - `DRIVER_NAMES` — optional comma-separated democratic-csi driver name override.
   Defaults to matching any driver containing `democratic-csi`. Longhorn is always
   excluded.
+- `TRUENAS_URL` + `TRUENAS_API_KEY` — optional; enable Phase 2 TrueNAS zvol
+  detail and block-mode usage. `TRUENAS_CACHE_TTL_SECONDS` (default `300`) and
+  `TRUENAS_INSECURE_TLS` (self-signed certs) tune it. See Phase 2 below.
 
 ## Throttling & caching
 
@@ -90,16 +94,32 @@ persistentvolumeclaims, persistentvolumes, pods, volumeattachments,
 storageclasses). Expose the `iscsi-viewer` Service through your reverse proxy /
 ingress.
 
-## Phase 2 — TrueNAS API (not yet implemented)
+## Phase 2 — TrueNAS API
 
-The Kubernetes API cannot report some things only TrueNAS knows. A future
-`lib/truenas.ts` (TrueNAS API v2.0, auth via `TRUENAS_URL` + `TRUENAS_API_KEY`)
-would map each PV to its zvol via `spec.csi.volumeHandle` and add:
+The Kubernetes API cannot report some things only TrueNAS knows. `lib/truenas.ts`
+maps each PV to its zvol via `spec.csi.volumeHandle` (`zvol/<dataset>/<id>` →
+`pool.dataset` id) and adds:
 
-- true allocated space (`used` / `referenced` / `logicalused`) vs thin `volsize`;
-- compression ratio and snapshot space;
-- **block-mode volume usage** (filling the Phase-1 `n/a (block)` gap);
-- iSCSI target/extent health.
+- **block-mode volume usage** — fills the Phase-1 `n/a (block)` gap;
+- true allocated space (ZFS `used` / `referenced` / `logicalused`) vs thin
+  `volsize`, compression ratio, and snapshot space — shown via a per-row
+  **details** toggle (progressive disclosure, no extra columns).
 
-These would merge into the existing rows as optional fields, degrading gracefully
-when TrueNAS is unreachable.
+Behavior:
+
+- **Fill-gaps-only.** Prometheus stays the primary source for mounted filesystem
+  usage; TrueNAS fills block-mode and unmounted volumes and always supplies the
+  extra ZFS detail. A `ⓣ` glyph marks a usage figure sourced from TrueNAS.
+- **ZFS `used` includes snapshots** — it's real allocation, not guest-filesystem
+  fill. The `ⓣ` tooltip says so.
+- **Graceful degrade.** Unset/unreachable TrueNAS → rows render from Kubernetes +
+  Prometheus exactly as Phase 1, with a warning banner if `TRUENAS_URL` was set
+  but the query failed.
+
+Transport is TrueNAS 25.04+ JSON-RPC 2.0 over WebSocket (`auth.login_with_api_key`
++ `pool.dataset.query`), hand-rolled over the `ws` package. The zvol query is
+cached on `TRUENAS_CACHE_TTL_SECONDS` (default 300) with the same single-flight /
+stale-on-error guarantees as the rest of the app.
+
+Deploy: create the API key secret from `deploy/secret.example.yaml` and set
+`TRUENAS_URL` in `deploy/deployment.yaml`. No RBAC change — TrueNAS is external.

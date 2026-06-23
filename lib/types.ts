@@ -30,6 +30,14 @@ export interface VolumeRow {
   usageAvailable: boolean; // false for block-mode (no kubelet stats) -> phase 2
   usageStale?: boolean; // usage from last_over_time fallback (volume unmounted)
   usageAsOf?: string; // ISO timestamp of last known sample, when stale
+  usageSource?: "prometheus" | "truenas"; // which source filled usedBytes/usedPercent
+  // TrueNAS zvol detail (phase 2; undefined when TrueNAS off / no match)
+  allocatedBytes?: number; // real allocated space (ZFS used, incl. snapshots)
+  volsizeBytes?: number; // provisioned thin size
+  referencedBytes?: number; // data unique to the live zvol
+  logicalusedBytes?: number; // pre-compression logical size
+  compressRatio?: number; // e.g. 1.83
+  snapshotBytes?: number; // space held by snapshots
   // lifecycle
   createdAt?: string; // ISO timestamp (PVC creationTimestamp)
   state: VolumeState;
@@ -55,5 +63,6 @@ export interface VolumesResponse {
   ttlSeconds: number; // server cache TTL; the UI polls at this cadence
   stale: boolean; // true when last refresh failed and we served prior data
   prometheusOk: boolean;
+  truenasOk: boolean;
   warnings: string[];
 }

@@ -6,7 +6,8 @@ import type {
   V1StorageClass,
 } from "@kubernetes/client-node";
 import { listAll } from "./k8s";
-import { fetchPvcUsage, type UsageMap } from "./prometheus";
+import { fetchPvcUsage, type PvcUsage, type UsageMap } from "./prometheus";
+import { fetchZvolUsage, zvolKey, type ZvolMap, type ZvolUsage } from "./truenas";
 import { parseQuantityToBytes } from "./format";
 import type { Consumer, VolumeRow, VolumesResponse, VolumeState } from "./types";
 
@@ -89,7 +90,11 @@ export async function getVolumes(): Promise<VolumesResponse> {
 async function computeVolumes(): Promise<VolumesResponse> {
   const warnings: string[] = [];
 
-  const [snap, usage] = await Promise.all([listAll(), fetchPvcUsage()]);
+  const [snap, usage, zvol] = await Promise.all([
+    listAll(),
+    fetchPvcUsage(),
+    fetchZvolUsage(),
+  ]);
   const prometheusOk = usage !== null;
   if (!prometheusOk) {
     warnings.push(
@@ -97,6 +102,10 @@ async function computeVolumes(): Promise<VolumesResponse> {
         ? "Prometheus query failed — actual usage unavailable."
         : "PROMETHEUS_URL not set — actual usage unavailable.",
     );
+  }
+  const truenasOk = zvol !== null;
+  if (!truenasOk && process.env.TRUENAS_URL) {
+    warnings.push("TrueNAS query failed — zvol detail / block usage unavailable.");
   }
 
   // Lookup maps.
@@ -142,7 +151,7 @@ async function computeVolumes(): Promise<VolumesResponse> {
     if (!isIscsi) continue;
     if (pvName) seenPv.add(pvName);
 
-    rows.push(buildRow(pvc, pv, vaByPv, consumersByPvc, usage));
+    rows.push(buildRow(pvc, pv, vaByPv, consumersByPvc, usage, zvol));
   }
 
   // Orphan iSCSI PVs with no live claim (Released/Available) — surface leaked volumes.
@@ -150,7 +159,7 @@ async function computeVolumes(): Promise<VolumesResponse> {
     const name = pv.metadata?.name;
     if (!name || seenPv.has(name)) continue;
     if (!driverMatches(pv.spec?.csi?.driver)) continue;
-    rows.push(buildOrphanRow(pv, vaByPv));
+    rows.push(buildOrphanRow(pv, vaByPv, zvol));
   }
 
   rows.sort(
@@ -164,6 +173,7 @@ async function computeVolumes(): Promise<VolumesResponse> {
     ttlSeconds: cacheTtlSeconds(),
     stale: false,
     prometheusOk,
+    truenasOk,
     warnings,
   };
 }
@@ -180,6 +190,7 @@ function buildRow(
   vaByPv: Map<string, V1VolumeAttachment>,
   consumersByPvc: Map<string, Consumer[]>,
   usage: UsageMap | null,
+  zvol: ZvolMap | null,
 ): VolumeRow {
   const namespace = pvc.metadata?.namespace ?? "";
   const name = pvc.metadata?.name ?? "?";
@@ -191,12 +202,14 @@ function buildRow(
     parseQuantityToBytes(pvc.status?.capacity?.storage);
 
   const volumeMode = pvc.spec?.volumeMode ?? pv?.spec?.volumeMode ?? "Filesystem";
-  const usageAvailable = volumeMode !== "Block";
-  const u = usageAvailable ? usage?.get(pvcKey(namespace, name)) : undefined;
-  const usedBytes = u?.usedBytes;
-  const capacityBytes = u?.capacityBytes;
-  const usedPercent =
-    usedBytes != null && capacityBytes ? usedBytes / capacityBytes : undefined;
+  const z = zvol?.get(zvolKey(pv?.spec?.csi?.volumeHandle) ?? "");
+
+  // Prometheus is primary for mounted filesystem volumes; TrueNAS fills the gaps
+  // (block-mode, or unmounted with no Prometheus data) and always supplies the
+  // extra ZFS detail below.
+  const fsMode = volumeMode !== "Block";
+  const prom = fsMode ? usage?.get(pvcKey(namespace, name)) : undefined;
+  const fill = computeUsage(prom, z, fsMode);
 
   const va = pvName ? vaByPv.get(pvName) : undefined;
   const attachedNode = va?.spec?.nodeName;
@@ -212,12 +225,14 @@ function buildRow(
     pvName,
     namespace,
     sizeBytes,
-    usedBytes,
-    capacityBytes,
-    usedPercent,
-    usageAvailable,
-    usageStale: u?.stale,
-    usageAsOf: u?.asOf,
+    usedBytes: fill.usedBytes,
+    capacityBytes: fill.capacityBytes,
+    usedPercent: fill.usedPercent,
+    usageAvailable: fill.usageAvailable,
+    usageStale: fill.usageStale,
+    usageAsOf: fill.usageAsOf,
+    usageSource: fill.usageSource,
+    ...zvolFields(z),
     createdAt: pvc.metadata?.creationTimestamp
       ? new Date(pvc.metadata.creationTimestamp).toISOString()
       : undefined,
@@ -236,21 +251,91 @@ function buildRow(
   };
 }
 
+// Pick the primary usage figures: Prometheus wins for mounted filesystems;
+// otherwise fall back to TrueNAS zvol (also fills block-mode, where Prometheus
+// has nothing). The ZFS `used` includes snapshots — it's real allocation, not
+// guest-filesystem fill.
+function computeUsage(
+  prom: PvcUsage | undefined,
+  z: ZvolUsage | undefined,
+  fsMode: boolean,
+): {
+  usedBytes?: number;
+  capacityBytes?: number;
+  usedPercent?: number;
+  usageAvailable: boolean;
+  usageStale?: boolean;
+  usageAsOf?: string;
+  usageSource?: "prometheus" | "truenas";
+} {
+  if (prom?.usedBytes != null) {
+    const usedPercent =
+      prom.capacityBytes ? prom.usedBytes / prom.capacityBytes : undefined;
+    return {
+      usedBytes: prom.usedBytes,
+      capacityBytes: prom.capacityBytes,
+      usedPercent,
+      usageAvailable: true,
+      usageStale: prom.stale,
+      usageAsOf: prom.asOf,
+      usageSource: "prometheus",
+    };
+  }
+  if (z?.usedBytes != null) {
+    const usedPercent =
+      z.volsizeBytes ? z.usedBytes / z.volsizeBytes : undefined;
+    return {
+      usedBytes: z.usedBytes,
+      capacityBytes: z.volsizeBytes,
+      usedPercent,
+      usageAvailable: true,
+      usageSource: "truenas",
+    };
+  }
+  // No usage from either source. Still "available" for filesystem volumes (just
+  // missing data → "—"); block volumes without TrueNAS stay n/a.
+  return { usageAvailable: fsMode };
+}
+
+// Extra ZFS detail fields, always copied through when TrueNAS matched the zvol.
+function zvolFields(z: ZvolUsage | undefined) {
+  if (!z) return {};
+  return {
+    allocatedBytes: z.usedBytes,
+    volsizeBytes: z.volsizeBytes,
+    referencedBytes: z.referencedBytes,
+    logicalusedBytes: z.logicalusedBytes,
+    compressRatio: z.compressRatio,
+    snapshotBytes: z.snapshotBytes,
+  };
+}
+
 function buildOrphanRow(
   pv: V1PersistentVolume,
   vaByPv: Map<string, V1VolumeAttachment>,
+  zvol: ZvolMap | null,
 ): VolumeRow {
   const pvName = pv.metadata?.name;
   const claimRef = pv.spec?.claimRef;
   const va = pvName ? vaByPv.get(pvName) : undefined;
   const pvPhase = pv.status?.phase;
 
+  // No claim ⇒ no kubelet/Prometheus stats; TrueNAS is the only usage source,
+  // and surfacing it on leaked PVs shows how much space the orphan still holds.
+  const z = zvol?.get(zvolKey(pv.spec?.csi?.volumeHandle) ?? "");
+  const fill = computeUsage(undefined, z, pv.spec?.volumeMode !== "Block");
+
   return {
     name: claimRef?.name ?? pvName ?? "?",
     pvName,
     namespace: claimRef?.namespace ?? "—",
     sizeBytes: parseQuantityToBytes(pv.spec?.capacity?.storage),
-    usageAvailable: pv.spec?.volumeMode !== "Block",
+    usedBytes: fill.usedBytes,
+    capacityBytes: fill.capacityBytes,
+    usedPercent: fill.usedPercent,
+    usageAvailable: fill.usageAvailable,
+    usageSource: fill.usageSource,
+    ...zvolFields(z),
     createdAt: pv.metadata?.creationTimestamp
       ? new Date(pv.metadata.creationTimestamp).toISOString()
       : undefined,

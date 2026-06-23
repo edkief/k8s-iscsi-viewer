@@ -135,6 +135,33 @@
   font-size: 12px;
 }
 
+.srcFlag {
+  color: #2f74c0;
+  cursor: help;
+  font-size: 12px;
+}
+
+.zvolDetail {
+  margin: 4px 0 0;
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 0 8px;
+  font-size: 12px;
+}
+
+.zvolDetail > div {
+  display: contents;
+}
+
+.zvolDetail dt {
+  color: var(--muted);
+}
+
+.zvolDetail dd {
+  margin: 0;
+  text-align: right;
+}
+
 /* ── State badges ──────────────────────────────────────────── */
 
 .badge {

@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { VolumeRow, VolumesResponse } from "@/lib/types";
-import { formatAge, formatBytes, formatPercent } from "@/lib/format";
+import { formatAge, formatBytes, formatPercent, formatRatio } from "@/lib/format";
 import styles from "./VolumeTable.module.css";
 
 type SortKey =
@@ -352,40 +352,102 @@ function Card({ r }: { r: VolumeRow }) {
   );
 }
 
-function Usage({ r }: { r: VolumeRow }) {
-  if (!r.usageAvailable) {
-    return <span className={styles.muted}>n/a (block)</span>;
-  }
-  if (r.usedBytes == null) {
-    return <span className={styles.muted}>—</span>;
-  }
-  const pct = r.usedPercent ?? 0;
+function hasZvolDetail(r: VolumeRow): boolean {
   return (
-    <div className={styles.usage}>
-      <div className={styles.bar}>
-        <div
-          className={`${styles.barFill} ${pct >= 0.85 ? styles.high : ""}`}
-          style={{ width: `${Math.min(100, Math.round(pct * 100))}%` }}
-        />
+    r.allocatedBytes != null ||
+    r.volsizeBytes != null ||
+    r.compressRatio != null ||
+    r.snapshotBytes != null ||
+    r.logicalusedBytes != null ||
+    r.referencedBytes != null
+  );
+}
+
+function Usage({ r }: { r: VolumeRow }) {
+  const [open, setOpen] = useState(false);
+  const detail = hasZvolDetail(r);
+
+  let body: ReactNode;
+  if (!r.usageAvailable) {
+    body = <span className={styles.muted}>n/a (block)</span>;
+  } else if (r.usedBytes == null) {
+    body = <span className={styles.muted}>—</span>;
+  } else {
+    const pct = r.usedPercent ?? 0;
+    body = (
+      <div className={styles.usage}>
+        <div className={styles.bar}>
+          <div
+            className={`${styles.barFill} ${pct >= 0.85 ? styles.high : ""}`}
+            style={{ width: `${Math.min(100, Math.round(pct * 100))}%` }}
+          />
+        </div>
+        <span className={styles.num}>
+          {formatBytes(r.usedBytes)}
+          {r.usedPercent != null && (
+            <span className={styles.sub}> ({formatPercent(r.usedPercent)})</span>
+          )}
+          {r.usageStale && (
+            <span
+              className={styles.staleFlag}
+              title={`Last known usage${
+                r.usageAsOf ? ` from ${formatAge(r.usageAsOf)} ago` : ""
+              } — volume not currently mounted`}
+            >
+              {" "}
+              ⚠
+            </span>
+          )}
+          {r.usageSource === "truenas" && (
+            <span
+              className={styles.srcFlag}
+              title="From TrueNAS (live zvol). ZFS used includes snapshots — real allocation, not guest-filesystem fill."
+            >
+              {" "}
+              ⓣ
+            </span>
+          )}
+        </span>
       </div>
-      <span className={styles.num}>
-        {formatBytes(r.usedBytes)}
-        {r.usedPercent != null && (
-          <span className={styles.sub}> ({formatPercent(r.usedPercent)})</span>
-        )}
-        {r.usageStale && (
-          <span
-            className={styles.staleFlag}
-            title={`Last known usage${
-              r.usageAsOf ? ` from ${formatAge(r.usageAsOf)} ago` : ""
-            } — volume not currently mounted`}
-          >
-            {" "}
-            ⚠
-          </span>
-        )}
-      </span>
+    );
+  }
+
+  if (!detail) return <>{body}</>;
+  return (
+    <div>
+      {body}
+      <button className={styles.expandBtn} onClick={() => setOpen((v) => !v)}>
+        {open ? "less" : "details"}
+      </button>
+      {open && <ZvolDetail r={r} />}
     </div>
+  );
+}
+
+function ZvolDetail({ r }: { r: VolumeRow }) {
+  const items: [string, string][] = [];
+  if (r.allocatedBytes != null)
+    items.push(["Allocated", formatBytes(r.allocatedBytes)]);
+  if (r.volsizeBytes != null)
+    items.push(["Provisioned", formatBytes(r.volsizeBytes)]);
+  if (r.compressRatio != null)
+    items.push(["Compression", formatRatio(r.compressRatio)]);
+  if (r.snapshotBytes != null)
+    items.push(["Snapshots", formatBytes(r.snapshotBytes)]);
+  if (r.logicalusedBytes != null)
+    items.push(["Logical", formatBytes(r.logicalusedBytes)]);
+  if (r.referencedBytes != null)
+    items.push(["Referenced", formatBytes(r.referencedBytes)]);
+
+  return (
+    <dl className={styles.zvolDetail}>
+      {items.map(([k, v]) => (
+        <div key={k}>
+          <dt>{k}</dt>
+          <dd className="mono">{v}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
