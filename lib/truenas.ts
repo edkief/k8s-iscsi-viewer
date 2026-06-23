@@ -23,6 +23,31 @@ export interface ZvolUsage {
 // keyed by zvol path (volumeHandle minus the leading "zvol/")
 export type ZvolMap = Map<string, ZvolUsage>;
 
+// Last-known health of the TrueNAS integration, surfaced to logs and the UI so a
+// blank table can be told apart from "connected, nothing matched" or "auth failed".
+export interface TruenasStatus {
+  configured: boolean; // both URL and API key set
+  ok: boolean; // last fetch connected, authed, and queried successfully
+  error?: string; // reason for the last failure when !ok
+  zvolCount: number; // datasets returned by the last successful query
+  checkedAt?: string; // ISO timestamp of the last fetch attempt
+  fromCache?: boolean; // last call served a stale snapshot after a failure
+}
+
+let lastStatus: TruenasStatus = { configured: false, ok: false, zvolCount: 0 };
+
+export function getTruenasStatus(): TruenasStatus {
+  return lastStatus;
+}
+
+const LOG_PREFIX = "[truenas]";
+function log(msg: string): void {
+  console.log(`${LOG_PREFIX} ${msg}`);
+}
+function warn(msg: string): void {
+  console.warn(`${LOG_PREFIX} ${msg}`);
+}
+
 function cacheTtlSeconds(): number {
   const v = Number(process.env.TRUENAS_CACHE_TTL_SECONDS);
   return Number.isFinite(v) && v > 0 ? v : 300; // 5 min
@@ -92,7 +117,10 @@ function queryDatasets(base: string, key: string): Promise<ZvolMap> {
     const send = (id: number, method: string, params: unknown[]) =>
       ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
 
-    ws.on("open", () => send(1, "auth.login_with_api_key", [key]));
+    ws.on("open", () => {
+      log(`connected to ${wsUrl(base)} — authenticating`);
+      send(1, "auth.login_with_api_key", [key]);
+    });
 
     ws.on("message", (data: WebSocket.RawData) => {
       let msg: RpcResponse;
@@ -110,6 +138,7 @@ function queryDatasets(base: string, key: string): Promise<ZvolMap> {
           finish(new Error("TrueNAS auth failed"));
           return;
         }
+        log("authenticated — querying VOLUME datasets");
         send(2, "pool.dataset.query", [[["type", "=", "VOLUME"]], {}]);
         return;
       }
@@ -152,10 +181,32 @@ async function getZvols(base: string, key: string): Promise<ZvolMap> {
     try {
       const map = await queryDatasets(base, key);
       cache = { map, at: Date.now() };
+      lastStatus = {
+        configured: true,
+        ok: true,
+        zvolCount: map.size,
+        checkedAt: new Date().toISOString(),
+      };
+      log(`query ok — ${map.size} zvol dataset(s)`);
       return map;
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const served = cache?.map;
+      warn(
+        `query failed: ${msg}${
+          served ? ` — serving cached snapshot (${served.size} zvols)` : ""
+        }`,
+      );
+      lastStatus = {
+        configured: true,
+        ok: false,
+        error: msg,
+        zvolCount: served?.size ?? 0,
+        checkedAt: new Date().toISOString(),
+        fromCache: !!served,
+      };
       // Serve last good snapshot on transient failure; empty otherwise.
-      return cache?.map ?? new Map();
+      return served ?? new Map();
     } finally {
       inflight = null;
     }
@@ -168,10 +219,29 @@ async function getZvols(base: string, key: string): Promise<ZvolMap> {
 export async function fetchZvolUsage(): Promise<ZvolMap | null> {
   const base = process.env.TRUENAS_URL;
   const key = process.env.TRUENAS_API_KEY;
-  if (!base || !key) return null;
+  if (!base || !key) {
+    // A half-configured deployment (only one var set) is almost always a mistake
+    // — call it out rather than silently disabling.
+    if (base || key) {
+      warn(
+        `disabled — only ${base ? "TRUENAS_URL" : "TRUENAS_API_KEY"} is set; both are required`,
+      );
+    }
+    lastStatus = { configured: false, ok: false, zvolCount: 0 };
+    return null;
+  }
   try {
     return await getZvols(base, key);
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    warn(`unexpected failure: ${msg}`);
+    lastStatus = {
+      configured: true,
+      ok: false,
+      error: msg,
+      zvolCount: 0,
+      checkedAt: new Date().toISOString(),
+    };
     return null;
   }
 }

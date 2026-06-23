@@ -7,7 +7,13 @@ import type {
 } from "@kubernetes/client-node";
 import { listAll } from "./k8s";
 import { fetchPvcUsage, type PvcUsage, type UsageMap } from "./prometheus";
-import { fetchZvolUsage, zvolKey, type ZvolMap, type ZvolUsage } from "./truenas";
+import {
+  fetchZvolUsage,
+  getTruenasStatus,
+  zvolKey,
+  type ZvolMap,
+  type ZvolUsage,
+} from "./truenas";
 import { parseQuantityToBytes } from "./format";
 import type { Consumer, VolumeRow, VolumesResponse, VolumeState } from "./types";
 
@@ -103,11 +109,6 @@ async function computeVolumes(): Promise<VolumesResponse> {
         : "PROMETHEUS_URL not set — actual usage unavailable.",
     );
   }
-  const truenasOk = zvol !== null;
-  if (!truenasOk && process.env.TRUENAS_URL) {
-    warnings.push("TrueNAS query failed — zvol detail / block usage unavailable.");
-  }
-
   // Lookup maps.
   const pvByName = new Map<string, V1PersistentVolume>();
   for (const pv of snap.pvs) if (pv.metadata?.name) pvByName.set(pv.metadata.name, pv);
@@ -167,6 +168,46 @@ async function computeVolumes(): Promise<VolumesResponse> {
       a.namespace.localeCompare(b.namespace) || a.name.localeCompare(b.name),
   );
 
+  // How many zvols actually mapped onto a volume on this page. Zero matches with
+  // a healthy query almost always means the volumeHandle → dataset id mapping is
+  // off (e.g. a different pool/parent path), which is otherwise invisible.
+  let matched = 0;
+  if (zvol) {
+    for (const r of rows) {
+      if (r.volumeHandle && zvol.has(zvolKey(r.volumeHandle) ?? "")) matched++;
+    }
+  }
+
+  const status = getTruenasStatus();
+  const truenasOk = !status.configured || status.ok;
+  if (status.configured && !status.ok) {
+    warnings.push(
+      `TrueNAS query failed${
+        status.error ? `: ${status.error}` : ""
+      } — zvol detail / block usage unavailable.`,
+    );
+  } else if (
+    status.configured &&
+    status.ok &&
+    status.zvolCount > 0 &&
+    matched === 0 &&
+    rows.length > 0
+  ) {
+    warnings.push(
+      `TrueNAS connected (${status.zvolCount} zvols) but none matched a volume handle — check the zvol path mapping.`,
+    );
+    const sampleIds = [...zvol!.keys()].slice(0, 3);
+    const sampleHandles = rows
+      .map((r) => r.volumeHandle)
+      .filter((h): h is string => !!h)
+      .slice(0, 3);
+    console.warn(
+      `[truenas] no zvol matched any volume handle. sample dataset ids=${JSON.stringify(
+        sampleIds,
+      )} sample volumeHandles=${JSON.stringify(sampleHandles)}`,
+    );
+  }
+
   return {
     rows,
     generatedAt: new Date().toISOString(),
@@ -174,14 +215,23 @@ async function computeVolumes(): Promise<VolumesResponse> {
     stale: false,
     prometheusOk,
     truenasOk,
+    truenas: {
+      configured: status.configured,
+      ok: status.ok,
+      zvolCount: status.zvolCount,
+      matched,
+      error: status.error,
+    },
     warnings,
   };
 }
 
+// Show the full CSI driver name rather than collapsing every democratic-csi
+// variant to a single label — distinct driver instances (e.g. one per pool/tier)
+// are the whole point of the column, and the storage class is shown alongside it.
 function dataEngineLabel(csiDriver?: string): string {
   if (!csiDriver) return "iscsi";
-  const short = csiDriver.includes("democratic-csi") ? "democratic-csi" : csiDriver;
-  return `iscsi · ${short}`;
+  return `iscsi · ${csiDriver}`;
 }
 
 function buildRow(

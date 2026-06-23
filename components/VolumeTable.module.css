@@ -141,6 +141,32 @@
   font-size: 12px;
 }
 
+/* ── TrueNAS status pill ───────────────────────────────────── */
+
+.tnDot {
+  cursor: help;
+  white-space: nowrap;
+}
+
+.tnDot > span {
+  font-size: 9px;
+  vertical-align: middle;
+  margin-right: 2px;
+}
+
+.tnOk {
+  color: var(--ok);
+}
+.tnWarn {
+  color: var(--warn);
+}
+.tnBad {
+  color: var(--bad);
+}
+.tnOff {
+  color: var(--idle);
+}
+
 .zvolDetail {
   margin: 4px 0 0;
   display: grid;

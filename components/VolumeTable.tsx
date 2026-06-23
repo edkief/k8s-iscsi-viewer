@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { VolumeRow, VolumesResponse } from "@/lib/types";
+import type { TruenasStatusInfo, VolumeRow, VolumesResponse } from "@/lib/types";
 import { formatAge, formatBytes, formatPercent, formatRatio } from "@/lib/format";
 import styles from "./VolumeTable.module.css";
 
@@ -119,6 +119,8 @@ export default function VolumeTable() {
                 {rows.length} of {data.rows.length} shown · updated{" "}
                 {formatAge(data.generatedAt)} ago{data.stale ? " (stale)" : ""}
                 {auto ? ` · refresh ${data.ttlSeconds}s` : ""}
+                {" · "}
+                <TruenasStatus t={data.truenas} />
               </>
             )}
           </p>
@@ -228,6 +230,43 @@ export default function VolumeTable() {
   );
 }
 
+// Compact TrueNAS health pill for the header. Distinguishes the four states a
+// blank table could otherwise hide: off, error, connected-but-unmatched, and ok.
+function TruenasStatus({ t }: { t: TruenasStatusInfo }) {
+  if (!t.configured) {
+    return (
+      <span className={styles.tnDot} title="TRUENAS_URL / TRUENAS_API_KEY not set">
+        <span className={styles.tnOff}>●</span> TrueNAS off
+      </span>
+    );
+  }
+  if (!t.ok) {
+    return (
+      <span className={styles.tnDot} title={t.error ?? "TrueNAS query failed"}>
+        <span className={styles.tnBad}>●</span> TrueNAS error
+      </span>
+    );
+  }
+  if (t.zvolCount > 0 && t.matched === 0) {
+    return (
+      <span
+        className={styles.tnDot}
+        title={`Connected and read ${t.zvolCount} zvol(s), but none mapped to a volume on this page — check the zvol path / volumeHandle mapping.`}
+      >
+        <span className={styles.tnWarn}>●</span> TrueNAS {t.zvolCount} zvols · 0 matched
+      </span>
+    );
+  }
+  return (
+    <span
+      className={styles.tnDot}
+      title={`Connected — ${t.zvolCount} zvol(s) read, ${t.matched} matched to volumes here.`}
+    >
+      <span className={styles.tnOk}>●</span> TrueNAS {t.matched}/{t.zvolCount} matched
+    </span>
+  );
+}
+
 function Row({ r }: { r: VolumeRow }) {
   const [expanded, setExpanded] = useState(false);
   const extraCount = r.consumers.length - 1;
@@ -248,7 +287,10 @@ function Row({ r }: { r: VolumeRow }) {
       </td>
       <td title={r.createdAt ?? ""}>{formatAge(r.createdAt)}</td>
       <td>
-        <span className={styles.sub}>{r.dataEngine}</span>
+        <div className={styles.sub}>{r.dataEngine}</div>
+        {r.storageClass && (
+          <div className={`${styles.sub} mono`}>{r.storageClass}</div>
+        )}
       </td>
       <td>
         {r.attachedNode ? (
@@ -316,6 +358,9 @@ function Card({ r }: { r: VolumeRow }) {
         <div className={styles.cardField}>
           <span className={styles.cardLabel}>Engine</span>
           <span className={styles.sub}>{r.dataEngine}</span>
+          {r.storageClass && (
+            <span className={`${styles.sub} mono`}>{r.storageClass}</span>
+          )}
         </div>
       </div>
 

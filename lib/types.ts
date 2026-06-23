@@ -56,6 +56,16 @@ export interface VolumeRow {
   consumers: Consumer[]; // pods mounting this PVC
 }
 
+// TrueNAS integration health, surfaced so the UI can show a status indicator and
+// tell "off" / "connected" / "connected but unmatched" / "error" apart.
+export interface TruenasStatusInfo {
+  configured: boolean; // TRUENAS_URL + TRUENAS_API_KEY both set
+  ok: boolean; // last fetch connected, authed, and queried successfully
+  zvolCount: number; // VOLUME datasets returned by TrueNAS
+  matched: number; // zvols that mapped to a volume on this page
+  error?: string; // failure reason when !ok
+}
+
 export interface VolumesResponse {
   rows: VolumeRow[];
   // diagnostics so the UI can surface partial degradation
@@ -64,5 +74,6 @@ export interface VolumesResponse {
   stale: boolean; // true when last refresh failed and we served prior data
   prometheusOk: boolean;
   truenasOk: boolean;
+  truenas: TruenasStatusInfo;
   warnings: string[];
 }
