@@ -39,6 +39,21 @@ spec:
             # Defaults to matching any driver containing "democratic-csi".
             # - name: DRIVER_NAMES
             #   value: "org.democratic-csi.iscsi"
+            # TrueNAS (phase 2): live zvol detail + block-mode usage. Optional —
+            # omit to fall back to Kubernetes + Prometheus only.
+            - name: TRUENAS_URL
+              value: "https://truenas.example.com"
+            - name: TRUENAS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: iscsi-viewer-truenas
+                  key: api-key
+            # zvol stats cache TTL (seconds). Default 300.
+            - name: TRUENAS_CACHE_TTL_SECONDS
+              value: "300"
+            # Set to "true" only if the NAS uses a self-signed TLS cert.
+            # - name: TRUENAS_INSECURE_TLS
+            #   value: "true"
           resources:
             requests:
               cpu: 50m

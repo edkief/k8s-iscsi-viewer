@@ -135,6 +135,59 @@
   font-size: 12px;
 }
 
+.srcFlag {
+  color: #2f74c0;
+  cursor: help;
+  font-size: 12px;
+}
+
+/* ── TrueNAS status pill ───────────────────────────────────── */
+
+.tnDot {
+  cursor: help;
+  white-space: nowrap;
+}
+
+.tnDot > span {
+  font-size: 9px;
+  vertical-align: middle;
+  margin-right: 2px;
+}
+
+.tnOk {
+  color: var(--ok);
+}
+.tnWarn {
+  color: var(--warn);
+}
+.tnBad {
+  color: var(--bad);
+}
+.tnOff {
+  color: var(--idle);
+}
+
+.zvolDetail {
+  margin: 4px 0 0;
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 0 8px;
+  font-size: 12px;
+}
+
+.zvolDetail > div {
+  display: contents;
+}
+
+.zvolDetail dt {
+  color: var(--muted);
+}
+
+.zvolDetail dd {
+  margin: 0;
+  text-align: right;
+}
+
 /* ── State badges ──────────────────────────────────────────── */
 
 .badge {

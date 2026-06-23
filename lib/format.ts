@@ -46,6 +46,12 @@ export function formatPercent(p?: number): string {
   return `${Math.round(p * 100)}%`;
 }
 
+// ZFS compression ratio, e.g. 1.83 -> "1.83×".
+export function formatRatio(r?: number): string {
+  if (r == null || !Number.isFinite(r)) return "—";
+  return `${r.toFixed(2)}×`;
+}
+
 // Compact relative-age string, e.g. "3d", "5h", "12m".
 export function formatAge(iso?: string): string {
   if (!iso) return "—";
