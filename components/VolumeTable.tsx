@@ -267,6 +267,27 @@ function TruenasStatus({ t }: { t: TruenasStatusInfo }) {
   );
 }
 
+// PVC name, linked to its dataset in the TrueNAS UI when TrueNAS matched the
+// zvol (and TRUENAS_URL is set). Plain text otherwise.
+function VolumeName({ r }: { r: VolumeRow }) {
+  if (!r.truenasUrl) return <>{r.name}</>;
+  return (
+    <a
+      className={styles.tnLink}
+      href={r.truenasUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Open this dataset in the TrueNAS UI"
+    >
+      {r.name}
+      <span className={styles.tnLinkIcon} aria-hidden="true">
+        {" "}
+        ↗
+      </span>
+    </a>
+  );
+}
+
 function Row({ r }: { r: VolumeRow }) {
   const [expanded, setExpanded] = useState(false);
   const extraCount = r.consumers.length - 1;
@@ -277,7 +298,9 @@ function Row({ r }: { r: VolumeRow }) {
         <StateBadge state={r.state} />
       </td>
       <td>
-        <div>{r.name}</div>
+        <div>
+          <VolumeName r={r} />
+        </div>
         {r.pvName && <div className={`${styles.sub} mono`}>{r.pvName}</div>}
       </td>
       <td>{r.namespace}</td>
@@ -337,7 +360,9 @@ function Card({ r }: { r: VolumeRow }) {
       <div className={styles.cardTop}>
         <StateBadge state={r.state} />
         <div className={styles.cardIdentity}>
-          <span className={styles.cardName}>{r.name}</span>
+          <span className={styles.cardName}>
+            <VolumeName r={r} />
+          </span>
           <span className={styles.sub}>{r.namespace}</span>
         </div>
       </div>

@@ -38,6 +38,7 @@ export interface VolumeRow {
   logicalusedBytes?: number; // pre-compression logical size
   compressRatio?: number; // e.g. 1.83
   snapshotBytes?: number; // space held by snapshots
+  truenasUrl?: string; // deep link to this zvol's dataset in the TrueNAS UI
   // lifecycle
   createdAt?: string; // ISO timestamp (PVC creationTimestamp)
   state: VolumeState;

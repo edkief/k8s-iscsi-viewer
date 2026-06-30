@@ -8,6 +8,7 @@ import type {
 import { listAll } from "./k8s";
 import { fetchPvcUsage, type PvcUsage, type UsageMap } from "./prometheus";
 import {
+  datasetUiUrl,
   fetchZvolUsage,
   getTruenasStatus,
   zvolResolver,
@@ -360,6 +361,7 @@ function zvolFields(z: ZvolUsage | undefined) {
     logicalusedBytes: z.logicalusedBytes,
     compressRatio: z.compressRatio,
     snapshotBytes: z.snapshotBytes,
+    truenasUrl: z.datasetId ? datasetUiUrl(z.datasetId) : undefined,
   };
 }
 

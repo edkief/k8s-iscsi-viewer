@@ -11,6 +11,7 @@
 import WebSocket from "ws";
 
 export interface ZvolUsage {
+  datasetId?: string; // TrueNAS pool.dataset id, e.g. "pool01/k8s-iscsi/pvc-<uuid>"
   usedBytes?: number; // real allocated bytes (includes snapshots)
   volsizeBytes?: number; // provisioned (thin) size
   referencedBytes?: number; // data unique to the live zvol
@@ -80,6 +81,21 @@ export function zvolResolver(map: ZvolMap): ZvolResolver {
     if (key === undefined) return undefined;
     return map.get(key) ?? byName.get(basename(key));
   };
+}
+
+// Deep link into the TrueNAS web UI for a dataset. The pool.dataset id is the
+// exact path the UI expects after /ui/datasets/, just URL-encoded (the "/"
+// separators become %2F).
+//
+// The link is rendered in the browser, so it must use a host the user's browser
+// can reach. TRUENAS_URL is the API endpoint, which is often an in-cluster
+// service address unreachable from outside — so prefer the dedicated
+// TRUENAS_UI_URL, falling back to TRUENAS_URL only when the two are the same
+// host. Returns undefined when neither is set.
+export function datasetUiUrl(datasetId: string): string | undefined {
+  const base = process.env.TRUENAS_UI_URL || process.env.TRUENAS_URL;
+  if (!base) return undefined;
+  return `${base.replace(/\/$/, "")}/ui/datasets/${encodeURIComponent(datasetId)}`;
 }
 
 // Derive the JSON-RPC WebSocket URL from the configured base host.
@@ -171,6 +187,7 @@ function queryDatasets(base: string, key: string): Promise<ZvolMap> {
           if (typeof id !== "string") continue;
           const compress = item.compressratio;
           map.set(id, {
+            datasetId: id,
             usedBytes: parsed(item.used),
             volsizeBytes: parsed(item.volsize),
             referencedBytes: parsed(item.referenced),
