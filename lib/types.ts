@@ -55,7 +55,14 @@ export interface VolumeRow {
   attachedNode?: string; // from VolumeAttachment
   attachmentHealthy?: boolean; // VolumeAttachment.status.attached
   consumers: Consumer[]; // pods mounting this PVC
+  // deletion (only when ENABLE_DELETE is on and TrueNAS is reachable)
+  deletable?: boolean; // eligible for the delete action under the current mode
+  pendingDeletion?: boolean; // zvol destroyed; awaiting CSI to reap the PV
 }
+
+// How the delete action is gated. Off by default; "released" allows only
+// orphaned/released PVs; "all" allows any unattached, not-in-use volume.
+export type DeleteMode = "off" | "released" | "all";
 
 // TrueNAS integration health, surfaced so the UI can show a status indicator and
 // tell "off" / "connected" / "connected but unmatched" / "error" apart.
@@ -76,5 +83,6 @@ export interface VolumesResponse {
   prometheusOk: boolean;
   truenasOk: boolean;
   truenas: TruenasStatusInfo;
+  deleteMode: DeleteMode; // whether/how the delete action is exposed to the UI
   warnings: string[];
 }

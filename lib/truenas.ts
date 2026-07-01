@@ -123,15 +123,19 @@ function parsed(prop: unknown): number | undefined {
 
 const TIMEOUT_MS = 10_000;
 
+// `ws` honours rejectUnauthorized for self-signed NAS certs; undefined keeps the
+// default (verify) behaviour.
+function tlsOpts() {
+  return process.env.TRUENAS_INSECURE_TLS === "true"
+    ? { rejectUnauthorized: false }
+    : undefined;
+}
+
 // Open one connection, authenticate, query all VOLUME datasets, close. Rejects
 // on any transport/auth/protocol failure so the caller can degrade gracefully.
 function queryDatasets(base: string, key: string): Promise<ZvolMap> {
   return new Promise<ZvolMap>((resolve, reject) => {
-    const opts =
-      process.env.TRUENAS_INSECURE_TLS === "true"
-        ? { rejectUnauthorized: false }
-        : undefined;
-    const ws = new WebSocket(wsUrl(base), opts);
+    const ws = new WebSocket(wsUrl(base), tlsOpts());
 
     let settled = false;
     const finish = (err: Error | null, map?: ZvolMap) => {
@@ -283,4 +287,76 @@ export async function fetchZvolUsage(): Promise<ZvolMap | null> {
     };
     return null;
   }
+}
+
+// Destroy a zvol and everything beneath it (snapshots included) on TrueNAS. This
+// is what unblocks a PV stuck in Released: ZFS refuses to delete a dataset that
+// still has snapshots, so the CSI DeleteVolume keeps failing — `recursive` clears
+// the snapshots and `force` releases any holds. One short-lived connection, same
+// framing as queryDatasets. Rejects on any transport/auth/RPC failure.
+export async function deleteDataset(datasetId: string): Promise<void> {
+  const base = process.env.TRUENAS_URL;
+  const key = process.env.TRUENAS_API_KEY;
+  if (!base || !key) throw new Error("TrueNAS not configured");
+
+  await new Promise<void>((resolve, reject) => {
+    const ws = new WebSocket(wsUrl(base), tlsOpts());
+
+    let settled = false;
+    const finish = (err: Error | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        ws.close();
+      } catch {
+        // ignore close errors
+      }
+      if (err) reject(err);
+      else resolve();
+    };
+
+    const timer = setTimeout(
+      () => finish(new Error("TrueNAS request timed out")),
+      TIMEOUT_MS,
+    );
+
+    const send = (id: number, method: string, params: unknown[]) =>
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+
+    ws.on("open", () => send(1, "auth.login_with_api_key", [key]));
+
+    ws.on("message", (data: WebSocket.RawData) => {
+      let msg: RpcResponse;
+      try {
+        msg = JSON.parse(data.toString()) as RpcResponse;
+      } catch {
+        return; // ignore non-JSON / notifications
+      }
+      if (msg.error) {
+        finish(new Error(`TrueNAS RPC error: ${msg.error.message ?? "unknown"}`));
+        return;
+      }
+      if (msg.id === 1) {
+        if (msg.result !== true) {
+          finish(new Error("TrueNAS auth failed"));
+          return;
+        }
+        log(`deleting dataset ${datasetId} (recursive, force)`);
+        send(2, "pool.dataset.delete", [datasetId, { recursive: true, force: true }]);
+        return;
+      }
+      if (msg.id === 2) {
+        log(`deleted dataset ${datasetId}`);
+        finish(null);
+      }
+    });
+
+    ws.on("error", (err) => finish(err instanceof Error ? err : new Error(String(err))));
+    ws.on("close", () => finish(new Error("TrueNAS connection closed early")));
+  });
+
+  // Drop the cached zvol snapshot so the destroyed dataset stops appearing on the
+  // next listing refresh rather than lingering for up to a full cache TTL.
+  cache = null;
 }

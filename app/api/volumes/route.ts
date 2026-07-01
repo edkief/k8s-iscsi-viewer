@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getVolumes } from "@/lib/volumes";
+import { DeleteError, deleteVolume, getVolumes } from "@/lib/volumes";
 
 // Always run on the Node runtime (the k8s client needs Node APIs) and never cache.
 export const runtime = "nodejs";
@@ -21,5 +21,23 @@ export async function GET() {
       { error: "Failed to query Kubernetes", detail: message },
       { status: 502 },
     );
+  }
+}
+
+// Delete a volume's zvol (and snapshots) on TrueNAS. Gated server-side by
+// ENABLE_DELETE and an eligibility re-check; identified by PV name to avoid any
+// ambiguity with namespaced PVC names.
+export async function DELETE(request: Request) {
+  const pvName = new URL(request.url).searchParams.get("pv");
+  if (!pvName) {
+    return NextResponse.json({ error: "Missing required 'pv' parameter" }, { status: 400 });
+  }
+  try {
+    const result = await deleteVolume(pvName);
+    return NextResponse.json({ ok: true, ...result });
+  } catch (err) {
+    const status = err instanceof DeleteError ? err.status : 500;
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json({ error: message }, { status });
   }
 }

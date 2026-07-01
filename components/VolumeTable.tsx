@@ -38,6 +38,7 @@ export default function VolumeTable() {
   const [namespace, setNamespace] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("namespace");
   const [sortAsc, setSortAsc] = useState(true);
+  const [deleteTarget, setDeleteTarget] = useState<VolumeRow | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -207,7 +208,11 @@ export default function VolumeTable() {
           </thead>
           <tbody>
             {rows.map((r) => (
-              <Row key={`${r.namespace}/${r.name}/${r.pvName ?? ""}`} r={r} />
+              <Row
+                key={`${r.namespace}/${r.name}/${r.pvName ?? ""}`}
+                r={r}
+                onDelete={setDeleteTarget}
+              />
             ))}
           </tbody>
         </table>
@@ -219,13 +224,28 @@ export default function VolumeTable() {
 
       <div className={styles.cardList}>
         {rows.map((r) => (
-          <Card key={`${r.namespace}/${r.name}/${r.pvName ?? ""}`} r={r} />
+          <Card
+            key={`${r.namespace}/${r.name}/${r.pvName ?? ""}`}
+            r={r}
+            onDelete={setDeleteTarget}
+          />
         ))}
         {!loading && rows.length === 0 && (
           <div className={styles.empty}>No iSCSI volumes found.</div>
         )}
         {loading && <div className={styles.empty}>Loading…</div>}
       </div>
+
+      {deleteTarget && (
+        <DeleteModal
+          r={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={() => {
+            setDeleteTarget(null);
+            load();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -288,7 +308,113 @@ function VolumeName({ r }: { r: VolumeRow }) {
   );
 }
 
-function Row({ r }: { r: VolumeRow }) {
+// Per-row delete affordance: a "Deleting…" marker while the PV is being reaped,
+// a Delete button when the volume is eligible, nothing otherwise.
+function DeleteControl({
+  r,
+  onDelete,
+}: {
+  r: VolumeRow;
+  onDelete: (r: VolumeRow) => void;
+}) {
+  if (r.pendingDeletion) {
+    return (
+      <span
+        className={styles.pendingFlag}
+        title="zvol destroyed on TrueNAS — waiting for Kubernetes to remove the PersistentVolume"
+      >
+        Deleting…
+      </span>
+    );
+  }
+  if (!r.deletable) return null;
+  return (
+    <button className={styles.deleteBtn} onClick={() => onDelete(r)}>
+      Delete
+    </button>
+  );
+}
+
+// Confirmation dialog. Requires typing the volume name to arm the Delete button,
+// and surfaces server-side errors (e.g. the volume became attached) in place.
+function DeleteModal({
+  r,
+  onClose,
+  onDeleted,
+}: {
+  r: VolumeRow;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (!r.pvName) {
+      setErr("This volume has no bound PersistentVolume to delete.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/volumes?pv=${encodeURIComponent(r.pvName)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      onDeleted();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Delete failed");
+      setBusy(false);
+    }
+  };
+
+  const armed = confirm.trim() === r.name && !busy;
+
+  return (
+    <div className={styles.modalOverlay} onClick={onClose}>
+      <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <h2 className={styles.modalTitle}>Delete volume</h2>
+        <p>
+          This permanently destroys the zvol{" "}
+          <span className="mono">{r.pvName ?? r.name}</span> and all of its
+          snapshots on TrueNAS. This cannot be undone. The backup copy on the
+          secondary pool is not affected.
+        </p>
+        <p>
+          Type <span className="mono">{r.name}</span> to confirm:
+        </p>
+        <input
+          className={styles.input}
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+          autoFocus
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && armed) submit();
+          }}
+        />
+        {err && <div className={styles.warn}>{err}</div>}
+        <div className={styles.modalActions}>
+          <button className={styles.button} onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            className={styles.deleteBtnPrimary}
+            onClick={submit}
+            disabled={!armed}
+          >
+            {busy ? "Deleting…" : "Delete"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Row({ r, onDelete }: { r: VolumeRow; onDelete: (r: VolumeRow) => void }) {
   const [expanded, setExpanded] = useState(false);
   const extraCount = r.consumers.length - 1;
 
@@ -302,6 +428,7 @@ function Row({ r }: { r: VolumeRow }) {
           <VolumeName r={r} />
         </div>
         {r.pvName && <div className={`${styles.sub} mono`}>{r.pvName}</div>}
+        <DeleteControl r={r} onDelete={onDelete} />
       </td>
       <td>{r.namespace}</td>
       <td className={styles.num}>{formatBytes(r.sizeBytes)}</td>
@@ -351,7 +478,7 @@ function Row({ r }: { r: VolumeRow }) {
   );
 }
 
-function Card({ r }: { r: VolumeRow }) {
+function Card({ r, onDelete }: { r: VolumeRow; onDelete: (r: VolumeRow) => void }) {
   const [expanded, setExpanded] = useState(false);
   const extraCount = r.consumers.length - 1;
 
@@ -365,6 +492,7 @@ function Card({ r }: { r: VolumeRow }) {
           </span>
           <span className={styles.sub}>{r.namespace}</span>
         </div>
+        <DeleteControl r={r} onDelete={onDelete} />
       </div>
 
       <div className={styles.cardGrid}>

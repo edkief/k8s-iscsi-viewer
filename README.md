@@ -48,6 +48,13 @@ See `.env.example`. Key vars:
 - `TRUENAS_URL` + `TRUENAS_API_KEY` — optional; enable Phase 2 TrueNAS zvol
   detail and block-mode usage. `TRUENAS_CACHE_TTL_SECONDS` (default `300`) and
   `TRUENAS_INSECURE_TLS` (self-signed certs) tune it. See Phase 2 below.
+- `TRUENAS_UI_URL` — optional browser-facing base URL for the per-volume "open in
+  TrueNAS" link (deep-links to `/ui/datasets/<id>`). Set this when `TRUENAS_URL`
+  is an in-cluster address the browser can't reach; falls back to `TRUENAS_URL`.
+- `ENABLE_DELETE` — optional; exposes a per-volume **Delete** action that destroys
+  the zvol and its snapshots on TrueNAS (`recursive`). `released` allows it only
+  on orphaned/Released PVs (recommended), `all` on any volume not attached or in
+  use; off otherwise. See Deleting volumes below.
 
 ## Throttling & caching
 
@@ -123,3 +130,29 @@ stale-on-error guarantees as the rest of the app.
 
 Deploy: create the API key secret from `deploy/secret.example.yaml` and set
 `TRUENAS_URL` in `deploy/deployment.yaml`. No RBAC change — TrueNAS is external.
+
+Each matched volume's name also deep-links into the TrueNAS web UI
+(`/ui/datasets/<id>`); the `pool.dataset` id is exactly the path the UI expects.
+The link uses `TRUENAS_UI_URL` (falling back to `TRUENAS_URL`) so it works even
+when the API endpoint is an in-cluster address the browser can't reach.
+
+## Deleting volumes
+
+A PV with `reclaimPolicy: Delete` can get stuck in `Released`: ZFS refuses to
+destroy a dataset that still has snapshots, so democratic-csi's `DeleteVolume`
+keeps failing and the zvol leaks. With `ENABLE_DELETE` set, each eligible row
+gets a **Delete** action that:
+
+1. Destroys the zvol **and its snapshots** on TrueNAS via `pool.dataset.delete`
+   with `recursive` + `force` — the snapshots are exactly what blocked the CSI
+   delete.
+2. Marks the volume **pending deletion** (an in-memory marker, 15-min TTL). It
+   does **not** write to Kubernetes: with the snapshots gone, democratic-csi's
+   periodic `DeleteVolume` retry (~5 min) now succeeds and reaps the PV itself.
+   So the RBAC stays read-only.
+
+Safety: off by default; `released` restricts it to orphaned/Released PVs, `all`
+to any volume not attached or in use. A volume that is attached to a node or
+consumed by a pod is never deletable. The UI requires typing the volume name to
+confirm, and the server re-checks eligibility against fresh cluster state before
+acting. The **secondary backup pool is never touched** — delete those manually.

@@ -9,14 +9,22 @@ import { listAll } from "./k8s";
 import { fetchPvcUsage, type PvcUsage, type UsageMap } from "./prometheus";
 import {
   datasetUiUrl,
+  deleteDataset,
   fetchZvolUsage,
   getTruenasStatus,
   zvolResolver,
   type ZvolResolver,
   type ZvolUsage,
 } from "./truenas";
+import { isPendingDeletion, markPendingDeletion } from "./pending";
 import { parseQuantityToBytes } from "./format";
-import type { Consumer, VolumeRow, VolumesResponse, VolumeState } from "./types";
+import type {
+  Consumer,
+  DeleteMode,
+  VolumeRow,
+  VolumesResponse,
+  VolumeState,
+} from "./types";
 
 const LONGHORN_DRIVER = "driver.longhorn.io";
 
@@ -41,6 +49,39 @@ function driverMatches(driver?: string): boolean {
 
 function pvcKey(namespace: string | undefined, name: string | undefined): string {
   return `${namespace ?? ""}/${name ?? ""}`;
+}
+
+// Delete is opt-in and gated by ENABLE_DELETE: unset/anything-else = off,
+// "released" exposes it only on orphaned/released PVs, "all" on any volume that
+// is not attached or in use. Off by default so existing deployments stay
+// read-only.
+export function deleteMode(): DeleteMode {
+  const v = (process.env.ENABLE_DELETE ?? "").trim().toLowerCase();
+  if (v === "released") return "released";
+  if (v === "all") return "all";
+  return "off";
+}
+
+// Eligibility under the current mode. We never offer to delete a volume that is
+// attached to a node or has a consuming pod — that would yank storage out from
+// under a running workload. In "released" mode we further restrict to PVs that
+// are actually Released/Available (i.e. orphaned), never a live bound claim.
+function deleteEligible(mode: DeleteMode, r: VolumeRow): boolean {
+  if (mode === "off") return false;
+  if (r.attachedNode || r.consumers.length > 0) return false;
+  if (mode === "all") return true;
+  return !r.bound && (r.pvPhase === "Released" || r.pvPhase === "Available");
+}
+
+// Raised by deleteVolume with an HTTP status the route can surface directly.
+export class DeleteError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "DeleteError";
+  }
 }
 
 // Server-side TTL cache shared across all clients and browser tabs. This bounds
@@ -184,6 +225,21 @@ async function computeVolumes(): Promise<VolumesResponse> {
 
   const status = getTruenasStatus();
   const truenasOk = !status.configured || status.ok;
+
+  // Annotate each row with its delete state. Deleting requires a working TrueNAS
+  // connection (that's where the zvol lives) and a resolvable dataset; pending
+  // rows show the in-flight marker instead of an actionable button.
+  const mode = deleteMode();
+  const canDelete = mode !== "off" && status.configured && status.ok;
+  for (const r of rows) {
+    r.pendingDeletion = r.pvName ? isPendingDeletion(r.pvName) : false;
+    r.deletable =
+      canDelete &&
+      !r.pendingDeletion &&
+      deleteEligible(mode, r) &&
+      !!r.volumeHandle &&
+      !!resolveZvol(r.volumeHandle);
+  }
   if (status.configured && !status.ok) {
     warnings.push(
       `TrueNAS query failed${
@@ -226,6 +282,7 @@ async function computeVolumes(): Promise<VolumesResponse> {
       matched,
       error: status.error,
     },
+    deleteMode: mode,
     warnings,
   };
 }
@@ -406,6 +463,66 @@ function buildOrphanRow(
     attachmentHealthy: va?.status?.attached,
     consumers: [],
   };
+}
+
+// Destroy a volume's zvol (and its snapshots) on TrueNAS. Re-validates
+// eligibility against fresh cluster state — the listing the user clicked from may
+// be up to a cache TTL stale — so a volume that became attached/in-use in the
+// meantime is never deleted. We deliberately do NOT touch the k8s PV: with the
+// blocking snapshots gone, democratic-csi's periodic DeleteVolume retry reaps the
+// Released PV on its own, so no write RBAC is needed. The volume is marked
+// pending so the UI reflects the in-flight state until that happens.
+export async function deleteVolume(pvName: string): Promise<{ datasetId: string }> {
+  const mode = deleteMode();
+  if (mode === "off") throw new DeleteError("Volume deletion is disabled", 403);
+
+  const [snap, zvol] = await Promise.all([listAll(), fetchZvolUsage()]);
+  const pv = snap.pvs.find((p) => p.metadata?.name === pvName);
+  if (!pv) throw new DeleteError(`PersistentVolume ${pvName} not found`, 404);
+  if (!driverMatches(pv.spec?.csi?.driver)) {
+    throw new DeleteError("Not a managed iSCSI/democratic-csi volume", 400);
+  }
+
+  // Never delete a volume attached to a node or consumed by a pod.
+  const va = snap.volumeAttachments.find(
+    (v) => v.spec?.source?.persistentVolumeName === pvName,
+  );
+  if (va?.spec?.nodeName) {
+    throw new DeleteError("Volume is attached to a node — refusing to delete", 409);
+  }
+  const claimRef = pv.spec?.claimRef;
+  if (claimRef?.name) {
+    const inUse = (snap.pods as V1Pod[]).some(
+      (pod) =>
+        pod.metadata?.namespace === claimRef.namespace &&
+        (pod.spec?.volumes ?? []).some(
+          (vol) => vol.persistentVolumeClaim?.claimName === claimRef.name,
+        ),
+    );
+    if (inUse) {
+      throw new DeleteError("Volume is in use by a pod — refusing to delete", 409);
+    }
+  }
+
+  const phase = pv.status?.phase;
+  if (mode === "released" && phase !== "Released" && phase !== "Available") {
+    throw new DeleteError(
+      `Refusing to delete a ${phase ?? "non-released"} volume in "released" mode`,
+      409,
+    );
+  }
+
+  const resolve: ZvolResolver = zvol ? zvolResolver(zvol) : () => undefined;
+  const z = resolve(pv.spec?.csi?.volumeHandle);
+  if (!z?.datasetId) {
+    throw new DeleteError("No matching TrueNAS dataset found for this volume", 404);
+  }
+
+  await deleteDataset(z.datasetId);
+  markPendingDeletion(pvName);
+  cache = null; // force the next listing to recompute and show the pending state
+  console.log(`[delete] destroyed zvol ${z.datasetId} for PV ${pvName} (mode=${mode})`);
+  return { datasetId: z.datasetId };
 }
 
 function deriveState(
